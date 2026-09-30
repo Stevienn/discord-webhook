@@ -400,7 +400,21 @@ def main():
     # Send Discord
     # =====================================================
 
+
     print("\nSending to Discord...")
+
+    def send_to_discord(message):
+        payload = {
+            "content": message,
+            "username": "💗 Your Personal Daily Reminder 💌"
+        }
+
+        response = requests.post(
+            DISCORD_WEBHOOK_URL,
+            json=payload
+        )
+
+        response.raise_for_status()
 
     send_to_discord(message)
 
