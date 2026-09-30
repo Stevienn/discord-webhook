@@ -151,7 +151,7 @@ def send_to_discord(message):
 
     payload = {
         "content": message,
-        "username": "Daily Reminder 💌"
+        "username": "💗 Your Daily Reminder 💌"
     }
 
     response = requests.post(
