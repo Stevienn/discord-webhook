@@ -1,22 +1,22 @@
 import os
 import json
+import time
 import requests
 from google import genai
-import time
 
 
 # =========================================================
-# CONFIGURATION
+# CONFIG
 # =========================================================
 
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 DISCORD_WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 
-MODEL_NAME = "gemini-3.8-flash"
-
 HISTORY_FILE = "history.json"
-
 MAX_HISTORY = 3650
+
+# Jumlah percobaan untuk setiap model
+MAX_RETRIES_PER_MODEL = 2
 
 
 # =========================================================
@@ -24,6 +24,7 @@ MAX_HISTORY = 3650
 # =========================================================
 
 def load_history():
+
     if not os.path.exists(HISTORY_FILE):
         return []
 
@@ -45,6 +46,7 @@ def load_history():
 # =========================================================
 
 def save_history(history):
+
     with open(HISTORY_FILE, "w", encoding="utf-8") as file:
         json.dump(
             history,
@@ -55,10 +57,55 @@ def save_history(history):
 
 
 # =========================================================
-# GENERATE MESSAGE
+# GET AVAILABLE GEMINI MODELS
 # =========================================================
 
-def generate_message(history):
+def get_available_models(client):
+
+    print("Checking available Gemini models...")
+
+    models = []
+
+    try:
+
+        for model in client.models.list():
+
+            model_name = model.name
+
+            # Hanya gunakan model yang mendukung generateContent
+            supported_methods = getattr(
+                model,
+                "supported_actions",
+                []
+            )
+
+            if (
+                "generateContent" in supported_methods
+                or not supported_methods
+            ):
+
+                models.append(model_name)
+
+    except Exception as error:
+
+        print(f"Failed to list Gemini models: {error}")
+
+    # Hapus duplicate
+    models = list(dict.fromkeys(models))
+
+    print("Available models:")
+
+    for model in models:
+        print(f" - {model}")
+
+    return models
+
+
+# =========================================================
+# CREATE PROMPT
+# =========================================================
+
+def create_prompt(history):
 
     recent_history = history[-200:]
 
@@ -70,7 +117,7 @@ def generate_message(history):
     if not history_text:
         history_text = "(Belum ada pesan sebelumnya)"
 
-    prompt = f"""
+    return f"""
 Buat SATU daily reminder romantis dalam Bahasa Indonesia
 untuk pasangan.
 
@@ -99,72 +146,149 @@ Aturan:
 11. Jangan menyalin pesan yang ada di history.
 12. Buat pesan yang berbeda dari pesan-pesan sebelumnya.
 
-History pesan sebelumnya:
+History pesan yang sudah pernah digunakan:
 
 {history_text}
 
-Buat satu pesan baru.
+Buat SATU pesan baru yang berbeda.
 
 Output HANYA pesan reminder-nya.
 Jangan gunakan tanda kutip.
 Jangan tambahkan penjelasan.
 """
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
 
-    max_retries = 5
+# =========================================================
+# GENERATE MESSAGE WITH MODEL FALLBACK
+# =========================================================
 
-    for attempt in range(max_retries):
+def generate_message(client, history):
 
-        try:
+    prompt = create_prompt(history)
 
-            print(
-                f"Requesting Gemini "
-                f"(attempt {attempt + 1}/{max_retries})..."
-            )
+    models = get_available_models(client)
 
-            response = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=prompt
-            )
+    if not models:
+        raise Exception(
+            "Tidak ada Gemini model yang tersedia."
+        )
 
-            message = response.text.strip()
+    # =====================================================
+    # Prioritas model
+    # =====================================================
 
-            if not message:
-                raise Exception("Gemini returned an empty message.")
+    # Model yang mengandung "flash" biasanya lebih cocok
+    # untuk tugas ringan seperti daily reminder.
+    flash_models = [
+        model for model in models
+        if "flash" in model.lower()
+    ]
 
-            return message
+    other_models = [
+        model for model in models
+        if model not in flash_models
+    ]
 
-        except Exception as error:
+    models = flash_models + other_models
 
-            error_text = str(error)
+    print("\nModel fallback order:")
 
-            print(f"Gemini error: {error_text}")
+    for index, model in enumerate(models, start=1):
+        print(f"{index}. {model}")
 
-            # Retry untuk temporary server/rate-limit errors
-            if (
-                "503" in error_text
-                or "UNAVAILABLE" in error_text
-                or "429" in error_text
-                or "RESOURCE_EXHAUSTED" in error_text
-            ):
+    # =====================================================
+    # Coba setiap model
+    # =====================================================
 
-                if attempt < max_retries - 1:
+    for model_name in models:
 
-                    wait_time = 10 * (attempt + 1)
+        print(
+            f"\nTrying model: {model_name}"
+        )
 
-                    print(
-                        f"Temporary Gemini error. "
-                        f"Retrying in {wait_time} seconds..."
+        for attempt in range(MAX_RETRIES_PER_MODEL):
+
+            try:
+
+                print(
+                    f"Attempt "
+                    f"{attempt + 1}/"
+                    f"{MAX_RETRIES_PER_MODEL}"
+                )
+
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
+
+                message = response.text.strip()
+
+                if not message:
+                    raise Exception(
+                        "Model returned empty response."
                     )
 
-                    time.sleep(wait_time)
+                print(
+                    f"SUCCESS using {model_name}"
+                )
+
+                return message
+
+            except Exception as error:
+
+                error_text = str(error)
+
+                print(
+                    f"Error from {model_name}:"
+                )
+
+                print(error_text)
+
+                # =========================================
+                # Temporary error
+                # =========================================
+
+                temporary_error = (
+                    "503" in error_text
+                    or "UNAVAILABLE" in error_text
+                    or "429" in error_text
+                    or "RESOURCE_EXHAUSTED" in error_text
+                    or "500" in error_text
+                )
+
+                if temporary_error:
+
+                    if attempt < MAX_RETRIES_PER_MODEL - 1:
+
+                        wait_time = 10 * (attempt + 1)
+
+                        print(
+                            f"Temporary error."
+                            f" Waiting {wait_time} seconds..."
+                        )
+
+                        time.sleep(wait_time)
+
+                    else:
+
+                        print(
+                            f"{model_name} failed."
+                            f" Moving to next model..."
+                        )
 
                 else:
-                    raise
 
-            else:
-                raise
+                    print(
+                        f"Non-temporary error."
+                        f" Moving to next model..."
+                    )
+
+                    break
+
+    # Semua model gagal
+    raise Exception(
+        "All available Gemini models failed."
+    )
 
 
 # =========================================================
@@ -196,8 +320,7 @@ def is_duplicate(message, history):
 def send_to_discord(message):
 
     payload = {
-        "content": message,
-        "username": "💗 Your Daily Reminder 💌"
+        "content": message
     }
 
     response = requests.post(
@@ -207,9 +330,11 @@ def send_to_discord(message):
     )
 
     if response.status_code not in (200, 204):
+
         raise Exception(
             f"Discord webhook error: "
-            f"{response.status_code} - {response.text}"
+            f"{response.status_code} - "
+            f"{response.text}"
         )
 
 
@@ -219,51 +344,69 @@ def send_to_discord(message):
 
 def main():
 
-    print("===================================")
-    print("💌 DAILY REMINDER BOT")
-    print("===================================")
+    print("======================================")
+    print("💌 DAILY ROMANTIC REMINDER")
+    print("======================================")
 
     history = load_history()
 
-    print(f"History loaded: {len(history)} messages")
+    print(
+        f"History loaded: "
+        f"{len(history)} messages"
+    )
+
+    client = genai.Client(
+        api_key=GEMINI_API_KEY
+    )
 
     # =====================================================
     # Generate message
     # =====================================================
 
-    max_attempts = 3
+    max_duplicate_attempts = 3
 
-    for attempt in range(max_attempts):
+    for attempt in range(max_duplicate_attempts):
 
         print(
-            f"Generating message "
-            f"(attempt {attempt + 1}/{max_attempts})..."
+            f"\nGenerating message "
+            f"({attempt + 1}/"
+            f"{max_duplicate_attempts})..."
         )
 
-        message = generate_message(history)
+        message = generate_message(
+            client,
+            history
+        )
 
-        print("Generated:")
+        print("\nGenerated message:")
         print(message)
 
         if not is_duplicate(message, history):
+
             break
 
-        print("Duplicate detected. Generating again...")
+        print(
+            "Duplicate detected."
+            " Generating another message..."
+        )
 
     else:
+
         raise Exception(
-            "Failed to generate a unique message."
+            "Failed to generate unique message."
         )
 
     # =====================================================
     # Send Discord
     # =====================================================
 
-    print("Sending message to Discord...")
+    print("\nSending to Discord...")
 
     send_to_discord(message)
 
-    print("Message sent successfully! 💌")
+    print(
+        "Discord message sent successfully! 💌"
+    )
 
     # =====================================================
     # Save history
@@ -271,19 +414,19 @@ def main():
 
     history.append(message)
 
-    # Batasi ukuran history
     if len(history) > MAX_HISTORY:
         history = history[-MAX_HISTORY:]
 
     save_history(history)
 
     print(
-        f"History saved: {len(history)} messages"
+        f"History saved."
+        f" Total messages: {len(history)}"
     )
 
-    print("===================================")
+    print("\n======================================")
     print("DONE ❤️")
-    print("===================================")
+    print("======================================")
 
 
 if __name__ == "__main__":
