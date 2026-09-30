@@ -2,6 +2,7 @@ import os
 import json
 import requests
 from google import genai
+import time
 
 
 # =========================================================
@@ -59,7 +60,6 @@ def save_history(history):
 
 def generate_message(history):
 
-    # Kirim sebagian history agar prompt tidak terlalu besar
     recent_history = history[-200:]
 
     history_text = "\n".join(
@@ -89,20 +89,21 @@ Aturan:
 1. Hanya buat SATU pesan.
 2. Panjang sekitar 1-3 kalimat.
 3. Gunakan Bahasa Indonesia yang natural dan santai.
-4. Boleh menggunakan emoji.
+4. Boleh menggunakan emoji, tetapi jangan berlebihan.
 5. Jangan selalu menggunakan kata "sayang".
 6. Jangan selalu diawali dengan "Selamat pagi".
 7. Jangan menggunakan struktur kalimat yang sama berulang kali.
+8. Jangan membuat pesan terlalu cheesy.
 9. Jangan menyebut bahwa pesan dibuat oleh AI.
 10. Pesan harus terasa seperti reminder kecil yang manis.
 11. Jangan menyalin pesan yang ada di history.
 12. Buat pesan yang berbeda dari pesan-pesan sebelumnya.
 
-Berikut history pesan yang SUDAH PERNAH digunakan:
+History pesan sebelumnya:
 
 {history_text}
 
-Sekarang buat satu pesan baru yang berbeda.
+Buat satu pesan baru.
 
 Output HANYA pesan reminder-nya.
 Jangan gunakan tanda kutip.
@@ -111,14 +112,59 @@ Jangan tambahkan penjelasan.
 
     client = genai.Client(api_key=GEMINI_API_KEY)
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt
-    )
+    max_retries = 5
 
-    message = response.text.strip()
+    for attempt in range(max_retries):
 
-    return message
+        try:
+
+            print(
+                f"Requesting Gemini "
+                f"(attempt {attempt + 1}/{max_retries})..."
+            )
+
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt
+            )
+
+            message = response.text.strip()
+
+            if not message:
+                raise Exception("Gemini returned an empty message.")
+
+            return message
+
+        except Exception as error:
+
+            error_text = str(error)
+
+            print(f"Gemini error: {error_text}")
+
+            # Retry untuk temporary server/rate-limit errors
+            if (
+                "503" in error_text
+                or "UNAVAILABLE" in error_text
+                or "429" in error_text
+                or "RESOURCE_EXHAUSTED" in error_text
+            ):
+
+                if attempt < max_retries - 1:
+
+                    wait_time = 10 * (attempt + 1)
+
+                    print(
+                        f"Temporary Gemini error. "
+                        f"Retrying in {wait_time} seconds..."
+                    )
+
+                    time.sleep(wait_time)
+
+                else:
+                    raise
+
+            else:
+                raise
 
 
 # =========================================================
