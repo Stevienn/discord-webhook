@@ -15,33 +15,18 @@ jobs:
       contents: write
 
     steps:
-      # ==========================================
-      # Checkout repository
-      # ==========================================
-
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # ==========================================
-      # Setup Python
-      # ==========================================
+        uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      # ==========================================
-      # Install dependencies
-      # ==========================================
-
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      # ==========================================
-      # Run bot
-      # ==========================================
 
       - name: Run Daily Reminder
         env:
@@ -49,10 +34,6 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           python main.py
-
-      # ==========================================
-      # Save history
-      # ==========================================
 
       - name: Commit updated history
         run: |
